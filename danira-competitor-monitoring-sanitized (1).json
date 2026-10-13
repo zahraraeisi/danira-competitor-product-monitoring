@@ -1,0 +1,459 @@
+{
+  "name": "Competitor Product Monitoring",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "triggerAtHour": 8
+            }
+          ]
+        }
+      },
+      "id": "a830cb3c-1786-478e-afdf-5b433817ddaa",
+      "name": "Run Monitoring On Schedule",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.4,
+      "position": [
+        0,
+        80
+      ]
+    },
+    {
+      "parameters": {
+        "documentId": {
+          "__rl": true,
+          "value": "YOUR_GOOGLE_SHEET_ID",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "gid=0",
+          "mode": "id"
+        },
+        "options": {}
+      },
+      "id": "751dba2a-3420-4834-b1e0-3f7c375dfd2f",
+      "name": "Read Products From Google Sheets",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        224,
+        80
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "active-status",
+              "leftValue": "={{ $json.active }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            },
+            {
+              "id": "has-url",
+              "leftValue": "={{ $json.product_url }}",
+              "operator": {
+                "type": "string",
+                "operation": "notEmpty",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "a7978414-6656-46b9-8fb1-e26e2def9144",
+      "name": "Keep Active Products Only",
+      "type": "n8n-nodes-base.filter",
+      "typeVersion": 2.2,
+      "position": [
+        448,
+        80
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "extraction",
+        "operation": "query",
+        "sessionMode": "new",
+        "url": "={{ $json.product_url }}",
+        "prompt": "Extract the product name, the current selling price (number only, plus the currency), and the stock status (e.g. in stock, out of stock) from this product page.",
+        "additionalFields": {
+          "outputSchema": "{\"$schema\":\"http://json-schema.org/draft-07/schema#\",\"type\":\"object\",\"properties\":{\"product_name\":{\"type\":\"string\"},\"price\":{\"type\":\"number\"},\"stock_status\":{\"type\":\"string\"},\"error\":{\"type\":\"string\",\"description\":\"Reason the product data could not be extracted, if applicable\"}},\"required\":[\"product_name\",\"price\",\"stock_status\"],\"additionalProperties\":false}",
+          "parseJsonOutput": true
+        }
+      },
+      "id": "4aa5131e-ff6e-42c8-8a2d-e285567ab321",
+      "name": "Extract Product Data With Airtop",
+      "type": "n8n-nodes-base.airtop",
+      "typeVersion": 1.1,
+      "position": [
+        896,
+        0
+      ],
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "f1",
+              "name": "product_id",
+              "type": "number",
+              "value": "={{ $('Process Each Product Individually').item.json.id }}"
+            },
+            {
+              "id": "f2",
+              "name": "competitor_name",
+              "type": "string",
+              "value": "={{ $('Process Each Product Individually').item.json.competitor_name }}"
+            },
+            {
+              "id": "f3",
+              "name": "competitor_url",
+              "type": "string",
+              "value": "={{ $('Process Each Product Individually').item.json.product_url }}"
+            },
+            {
+              "id": "f4",
+              "name": "product_name",
+              "type": "string",
+              "value": "={{ $json.output.product_name }}"
+            },
+            {
+              "id": "f5",
+              "name": "current_price",
+              "type": "number",
+              "value": "={{ $json.output.price }}"
+            },
+            {
+              "id": "f6",
+              "name": "stock_status",
+              "type": "string",
+              "value": "={{ $json.output.stock_status }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "a88de5d5-321e-493e-9ef0-3f0024477a4e",
+      "name": "Structure Extracted Product Data",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        1120,
+        80
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const current = $json;\nconst prev = $('Process Each Product Individually').item.json;\n\nconst toNum = (v) => {\n  if (v === null || v === undefined || v === '') return null;\n  const n = parseFloat(String(v).replace(/[^0-9.\\-]/g, ''));\n  return Number.isFinite(n) ? n : null;\n};\nconst stockState = (v) => {\n  const s = String(v === null || v === undefined ? '' : v).trim().toLowerCase();\n  if (!s) return null;\n  if (/out of stock|sold out|unavailable|not available|out-of-stock|no stock/.test(s)) return 'out';\n  if (/in stock|available|in-stock|ready to ship/.test(s)) return 'in';\n  return 'unknown';\n};\n\nconst previousPrice = toNum(prev.last_price);\nconst currentPrice = toNum(current.current_price);\nconst prevStock = stockState(prev.last_stock_status);\nconst currStock = stockState(current.stock_status);\n\nlet priceChangePercent = null;\nif (previousPrice !== null && previousPrice !== 0 && currentPrice !== null) {\n  priceChangePercent = Math.round(((currentPrice - previousPrice) / previousPrice) * 10000) / 100;\n}\n\nlet eventType = 'NO_CHANGE';\nif (previousPrice === null && prevStock === null) {\n  eventType = 'INITIAL';\n} else if (prevStock === 'in' && currStock === 'out') {\n  eventType = 'OUT_OF_STOCK';\n} else if (prevStock === 'out' && currStock === 'in') {\n  eventType = 'BACK_IN_STOCK';\n} else if (previousPrice !== null && currentPrice !== null && currentPrice < previousPrice) {\n  eventType = 'PRICE_DOWN';\n} else if (previousPrice !== null && currentPrice !== null && currentPrice > previousPrice) {\n  eventType = 'PRICE_UP';\n}\n\nreturn {\n  json: {\n    ...current,\n    previous_price: previousPrice,\n    previous_stock_status: prev.last_stock_status === undefined || prev.last_stock_status === '' ? null : prev.last_stock_status,\n    event_type: eventType,\n    price_change_percent: priceChangePercent,\n  },\n};"
+      },
+      "id": "a711ff22-cdef-4102-8f32-8705b1828a5b",
+      "name": "Compare With Previous Values",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1344,
+        272
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "alert-event",
+              "leftValue": "={{ ['PRICE_DOWN','PRICE_UP','OUT_OF_STOCK','BACK_IN_STOCK'].includes($json.event_type) }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "8823a952-2596-4dc0-b1b5-b9533bf66b96",
+      "name": "Is Alert Event",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1568,
+        -48
+      ]
+    },
+    {
+      "parameters": {
+        "chatId": "YOUR_TELEGRAM_CHAT_ID",
+        "text": "=Competitor Alert\n\nEvent: {{ $('Compare With Previous Values').item.json.event_type }}\nCompetitor: {{ $('Compare With Previous Values').item.json.competitor_name }}\nProduct: {{ $('Compare With Previous Values').item.json.product_name }}\n\nPrevious price: {{ $('Compare With Previous Values').item.json.previous_price ?? 'N/A' }}\nCurrent price: {{ $('Compare With Previous Values').item.json.current_price ?? 'N/A' }}\nPrice change: {{ $('Compare With Previous Values').item.json.price_change_percent ?? 'N/A' }}%\n\nPrevious stock status: {{ $('Compare With Previous Values').item.json.previous_stock_status ?? 'N/A' }}\nCurrent stock status: {{ $('Compare With Previous Values').item.json.stock_status ?? 'N/A' }}\n\nURL: {{ $('Compare With Previous Values').item.json.competitor_url }}",
+        "replyMarkup": "=",
+        "forceReply": {},
+        "replyKeyboardOptions": {},
+        "replyKeyboardRemove": {},
+        "additionalFields": {
+          "appendAttribution": false,
+          "parse_mode": "HTML"
+        }
+      },
+      "id": "9c128e88-1550-4ce5-82e0-0d0d8e96d377",
+      "name": "Send Telegram Alert",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        1792,
+        -128
+      ],
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "documentId": {
+          "__rl": true,
+          "value": "YOUR_GOOGLE_SHEET_ID",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "gid=0",
+          "mode": "id"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "id": "={{ $('Compare With Previous Values').item.json.product_id }}",
+            "last_price": "={{ $('Compare With Previous Values').item.json.current_price }}",
+            "last_stock_status": "={{ $('Compare With Previous Values').item.json.stock_status }}",
+            "last_checked": "={{ $now.toISO() }}"
+          },
+          "matchingColumns": [
+            "id"
+          ],
+          "schema": [
+            {
+              "id": "id",
+              "displayName": "id",
+              "required": false,
+              "defaultMatch": true,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "last_price",
+              "displayName": "last_price",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": false
+            },
+            {
+              "id": "last_stock_status",
+              "displayName": "last_stock_status",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": false
+            },
+            {
+              "id": "last_checked",
+              "displayName": "last_checked",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": false
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "b415de01-5358-428b-a1ea-2f7cc17e6ee0",
+      "name": "Update Product Row In Google Sheets",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        1344,
+        80
+      ],
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "options": {}
+      },
+      "id": "2143d07a-0680-481b-b52d-405cbc94efd6",
+      "name": "Process Each Product Individually",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [
+        672,
+        80
+      ]
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Run Monitoring On Schedule": {
+      "main": [
+        [
+          {
+            "node": "Read Products From Google Sheets",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read Products From Google Sheets": {
+      "main": [
+        [
+          {
+            "node": "Keep Active Products Only",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Keep Active Products Only": {
+      "main": [
+        [
+          {
+            "node": "Process Each Product Individually",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract Product Data With Airtop": {
+      "main": [
+        [
+          {
+            "node": "Structure Extracted Product Data",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Process Each Product Individually",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Structure Extracted Product Data": {
+      "main": [
+        [
+          {
+            "node": "Compare With Previous Values",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Compare With Previous Values": {
+      "main": [
+        [
+          {
+            "node": "Is Alert Event",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Is Alert Event": {
+      "main": [
+        [
+          {
+            "node": "Send Telegram Alert",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Update Product Row In Google Sheets",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Telegram Alert": {
+      "main": [
+        [
+          {
+            "node": "Update Product Row In Google Sheets",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Update Product Row In Google Sheets": {
+      "main": [
+        [
+          {
+            "node": "Process Each Product Individually",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Process Each Product Individually": {
+      "main": [
+        [],
+        [
+          {
+            "node": "Extract Product Data With Airtop",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "nodeGroups": [],
+  "tags": []
+}
